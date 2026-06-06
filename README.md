@@ -1,7 +1,7 @@
 # pyxunlei
 基于Docker版本的[Xunlei API Client](https://github.com/cnk3x/xunlei)
 ## 支持版本
-仅在3.7.1版本中测试通过
+3.23.3
 
 ## 使用方法
 可以使用pip安装 `pip install pyxunlei -i https://pypi.python.org/simple`
