@@ -58,12 +58,13 @@ class XunLeiClient():
 
         self._session = requests.Session()
         self._api = f"{'https' if ssl else 'http'}://{host}:{port}"
+        self._pan_auth_token = None  # 延迟加载，首次访问 pan_auth 时从页面提取
         # 获取device_id
         response = self._session.get(
             f"{self._api}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/tasks?type=user%23runner&device_space=", headers=self.headers)
         if response.status_code == 500:
             raise NotLoginXunLeiAccount(response.json().get('error'))
-        if response.json().get('error_code') == 403:
+        if response.status_code == 403 or response.json().get('error_code') == 403:
             raise PanAuthInvalid('params: pan_auth gen error')
         tasks = response.json().get('tasks')
 
@@ -92,10 +93,9 @@ class XunLeiClient():
             f"{self._api}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/files?space={quote(self._device_id)}&limit=200&parent_id=&filters=%7B%22kind%22%3A%7B%22eq%22%3A%22drive%23folder%22%7D%7D&page_token=&device_space=", headers=self.headers)
 
         if not download_root_dir:
-            self._parent_folder_id = response.json().get('files')[
-                0].get('parent_id')
-            self._parent_folder_name = response.json().get('files')[
-                0].get('name')
+            first = response.json().get('files', [])[0]
+            self._parent_folder_id = first.get('parent_id') or first.get('id')
+            self._parent_folder_name = first.get('name')
         else:
             for parent in response.json().get('files'):
                 if parent.get('name') == download_root_dir:
@@ -123,12 +123,17 @@ class XunLeiClient():
 
     @property
     def pan_auth(self):
-        e = int(time.time())
-        s = f"{e}yrjmxtpovrzzdqgtbjdncmsywlpmyqcaawbnruddxucykfebpkuseypjegajzzpplmzrejnavcwtvciupgigyrtomdljhtmsljegvutunuizvatwtqdjheituaizfjyfzpbcvhhlaxzfatpgongrqadvixrnvastczwnolznfavqrvmjseiosmvrtcqiapmtzjfihdysqmhaijlpsrssovkpqnjbxuwkhjpfxpoldvqrnlhgdbcpnsilsmydxaxrxjzbdekzmshputmgkedetrcbmcdgljfkpbprvqncixfkavyxoibbuuyqzvcbzdgvipozeplohmcyfornhxzsadavvimivbzexfzhlndddnbywhsvjrotwzarbycpwydvpeqtuigfwzcvoswgpoakuvgdbykdjdcsdlnqskogpbsyceeyaigbgmrbnzixethpvqvvfvdcvjbilxikvklfbkcnfprzhijjnuoovulvigiqvbosnbixeplvnewmyipxuzpvocbvidnzgsrdfkejghvvyizkjlofndcuzvlhdhovpeolsyroljurbplpwbbihmdloahicnqehgjnbthmrljtzovltnlpeibodpjvemhhybmanskbtvdrgkrzoyhsjcexfrcpddoemazkfjwmrbrcloitmdzzkgxwlhnbfpjffrpryljdzdqsbacrjgohzwgbvzgevnqvxppsxqzczfgpuvigjbuhzweyeinukeurkogpotdegqhtsztdinmijjowivciviunhcjhtufzhjlmpqlngslimksdeezdzxihtmaywfvipjctuealhlovmzdodruperyysdhwjbtidwdzusifeepywsmkqbknlgdhextvlheufxivphskqvdtbcjfryxlolujmennakdqjdhtcxwnhknhzlaatuhyofenhdigojyxrluijjxeywnmopsuicglfcqyybbpynpcsnizupumtakwwnjlkfkuooqoqxhjnryylklokmzvmmgjsbbvgmwoucpvzedmqpkmazwhhvxqygrexopkmcdyniqocguykphlngjesqohhuvnkcliuawkzcmvevdbouwzvgmhtavwyhstvqwhcwjluzjopnhuisbsrloavcieskcyqftdhieduduhowgvrkimgdhyszsiknmuzvnrqqlbykbdlixosgxrdunymbixakkmgppteayqmqivxcwawyidpltevotwoxlkrucmluuluatgeskhfsrsebhniwhujpwrpknjxylidtjwebvwmbwayoepootybnlcaoixlgvjmpquxnyomoiopsjxtnorhwnlmonllastiezyvfbbgngjybtgbkxuaqdmkuqwupgzhffuyzgdnahdifaqtfmpysnlesvfoiofxvbtqkiqvdniejbyzugbkursumqddaslhqpkdrjnnsdqfthxtghxhaylgeqnknhqwpammlfnlkjuqevnxesyqsnpufvrbeohphxfabcduuklpkfoiifsqrrbsxkkmdrnkeboprnksfzwmjymjspzsrfjlwneuwzjjwejruubhhqaktxhygtjuhjmtvrklrmxdbbwooxsucmynwgcxhzdctgtchaevmpfiqfwydultmgqnionuendspvdrcctxldnyjlgnsqxaddadxeyvlcifdxksgdhaatsslhcofnxmilljpzdlumfjvcwvjrxegwbwuuwkguydhozqqnuselsoojnsefquuhpijdguofwrcjbuaugyzphkenbyhdstsldybdqsfxjhpgnerbdosbtyzdtrhyvwkzkurnmbgjtzlzcpfsuxussguelnjttmwejhreptwogekfvdsemlkvklcxeuzlboqwbngddexhsmyzqkztvlbgybbfmzbjroajaucykiqvhjrirlgawaessusvulngosviecmbpfgevxqptalguchfzkrrpruwxspggiqokepqpocezcewhyajsgxrqqqeuhwvc"
-        # 对s进行Md5
-        md5 = hashlib.md5()
-        md5.update(s.encode('utf-8'))
-        return f"{e}.{md5.hexdigest()}"
+        """从迅雷 Web 页面的 uiauth() 函数中提取 JWT token 作为 pan-auth"""
+        import re as _re
+        if not hasattr(self, '_pan_auth_token') or not self._pan_auth_token:
+            resp = self._session.get(f"{self._api}/webman/3rdparty/pan-xunlei-com/index.cgi/")
+            match = _re.search(r'uiauth\(value\)\{\s*return\s*"([^"]+)"', resp.text)
+            if match:
+                self._pan_auth_token = match.group(1)
+                logger.debug(f'success get pan_auth token: {self._pan_auth_token[:20]}...')
+            else:
+                raise PanAuthInvalid('params: pan_auth gen error, uiauth not found in page')
+        return self._pan_auth_token
 
     def completed_tasks(self) -> List[TaskInfo]:
         """获取所有已经完成的任务
